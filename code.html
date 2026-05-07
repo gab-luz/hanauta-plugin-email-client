@@ -47,11 +47,7 @@
     body {
       margin: 0;
       min-height: 100%;
-      background:
-        radial-gradient(circle at 12% 12%, rgba(156, 231, 255, 0.18), transparent 30%),
-        radial-gradient(circle at 86% 10%, rgba(227, 156, 255, 0.13), transparent 24%),
-        radial-gradient(circle at 18% 92%, rgba(111, 132, 255, 0.14), transparent 24%),
-        linear-gradient(180deg, #090b14 0%, #0b1120 48%, #090d19 100%);
+      background: var(--bg);
       color: var(--text);
       font-family: var(--display-font), var(--ui-font), "Segoe UI", sans-serif;
       -webkit-font-smoothing: antialiased;
@@ -91,8 +87,8 @@
       height: calc(100vh - 36px);
       border-radius: 26px;
       overflow: hidden;
-      background: linear-gradient(180deg, rgba(13, 17, 29, 0.92), rgba(11, 15, 26, 0.9));
-      border: 1px solid rgba(178, 228, 255, 0.09);
+      background: var(--bg-elevated);
+      border: 1px solid var(--line);
       box-shadow: var(--shadow);
       backdrop-filter: blur(20px);
       display: grid;
@@ -100,13 +96,7 @@
     }
 
     .shell::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background:
-        linear-gradient(140deg, rgba(156, 231, 255, 0.08), transparent 30%),
-        radial-gradient(circle at 20% 0%, rgba(227, 156, 255, 0.08), transparent 35%);
-      pointer-events: none;
+      display: none;
     }
 
     .topbar {
@@ -117,7 +107,7 @@
       gap: 14px;
       align-items: center;
       padding: 12px 16px;
-      background: rgba(10, 14, 25, 0.6);
+      background: var(--panel);
       border-bottom: 1px solid var(--line);
     }
 
@@ -273,7 +263,7 @@
 
     .sidebar {
       padding: 14px;
-      background: rgba(18, 20, 31, 0.76);
+      background: var(--panel);
       border-right: 1px solid var(--line);
       gap: 18px;
     }
@@ -431,14 +421,15 @@
       gap: 12px;
       padding: 9px 11px;
       border-radius: 13px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
       color: var(--text-soft);
       font-size: 12px;
     }
 
     .message-list {
       border-right: 1px solid var(--line);
-      background: rgba(22, 25, 37, 0.74);
+      background: var(--panel);
     }
 
     .list-head,
@@ -483,7 +474,8 @@
       border-radius: 9px;
       display: grid;
       place-items: center;
-      background: rgba(255, 255, 255, 0.04);
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
       color: var(--text-soft);
       cursor: pointer;
       pointer-events: auto;
@@ -502,8 +494,8 @@
       text-align: left;
       border-radius: 18px;
       padding: 11px;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid transparent;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -651,7 +643,8 @@
       gap: 8px;
       padding: 8px 12px;
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.04);
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
       color: var(--text-soft);
       font-size: 12px;
     }
@@ -671,7 +664,8 @@
       flex-wrap: wrap;
       padding: 18px 20px;
       border-radius: 24px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
     }
 
     .sender-block {
@@ -716,7 +710,8 @@
     .message-content {
       padding: 26px 28px;
       border-radius: 28px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
       color: var(--text-soft);
       line-height: 1.75;
       font-size: 14px;
@@ -735,7 +730,7 @@
       white-space: pre-wrap;
       padding: 16px;
       border-radius: 18px;
-      background: rgba(0, 0, 0, 0.18);
+      background: var(--panel-soft);
       color: var(--text);
     }
 
@@ -1047,7 +1042,7 @@
 
     html.qtwebengine,
     html.qtwebengine body {
-      background: #12131d;
+      background: var(--bg);
     }
 
     html.qtwebengine .shell,
@@ -1056,9 +1051,9 @@
     }
 
     html.qtwebengine .shell {
-      background: #11131d;
+      background: var(--bg-elevated);
       box-shadow: none;
-      border-color: rgba(255, 255, 255, 0.06);
+      border-color: var(--line);
     }
 
     html.qtwebengine .shell::before {
@@ -1066,19 +1061,19 @@
     }
 
     html.qtwebengine .topbar {
-      background: #171b29;
+      background: var(--panel);
     }
 
     html.qtwebengine .sidebar {
-      background: #171a27;
+      background: var(--panel);
     }
 
     html.qtwebengine .message-list {
-      background: #1a1d2c;
+      background: var(--panel);
     }
 
     html.qtwebengine .detail {
-      background: #141823;
+      background: var(--bg-elevated);
     }
 
     html.qtwebengine .section,
@@ -1089,7 +1084,7 @@
     html.qtwebengine .modal,
     html.qtwebengine .toast,
     html.qtwebengine .stat-card {
-      background: #1f2332;
+      background: var(--panel-strong);
       box-shadow: none;
     }
 
@@ -1102,7 +1097,8 @@
     html.qtwebengine .field input,
     html.qtwebengine .field textarea,
     html.qtwebengine .field select {
-      background: #24293a;
+      background: var(--panel-strong);
+      border-color: var(--line);
       box-shadow: none;
     }
 
@@ -1480,6 +1476,28 @@
       if (!theme) {
         return;
       }
+      function hexToRgb(color) {
+        const raw = String(color || "").trim();
+        const match = /^#?([0-9a-f]{6})$/i.exec(raw);
+        if (!match) return { r: 0, g: 0, b: 0 };
+        const value = match[1];
+        return {
+          r: parseInt(value.slice(0, 2), 16),
+          g: parseInt(value.slice(2, 4), 16),
+          b: parseInt(value.slice(4, 6), 16)
+        };
+      }
+      function relativeLuminance(color) {
+        const { r, g, b } = hexToRgb(color);
+        function channel(v) {
+          const s = v / 255;
+          return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+      }
+      function isLight(color) {
+        return relativeLuminance(color) >= 0.55;
+      }
       const root = document.documentElement;
       root.style.setProperty("--accent", theme.primary || "#d3bcff");
       root.style.setProperty("--accent-strong", theme.secondary || theme.primary || "#bb9af7");
@@ -1492,8 +1510,9 @@
       root.style.setProperty("--text", theme.on_surface || "#edf1ff");
       root.style.setProperty("--text-soft", theme.on_surface_variant || "#aeb5d6");
       root.style.setProperty("--text-dim", theme.outline || "#7981a7");
-      root.style.setProperty("--line", "rgba(255,255,255,0.08)");
-      root.style.setProperty("--line-strong", "rgba(255,255,255,0.12)");
+      const lightMode = isLight(theme.background || "#ffffff");
+      root.style.setProperty("--line", lightMode ? "rgba(0,0,0,0.10)" : "rgba(255,255,255,0.08)");
+      root.style.setProperty("--line-strong", lightMode ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.12)");
       root.style.setProperty("--danger", theme.error || "#ff9b9b");
       if (theme.ui_font_family) {
         root.style.setProperty("--ui-font", `"${theme.ui_font_family}"`);

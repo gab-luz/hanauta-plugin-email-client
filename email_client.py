@@ -6,6 +6,9 @@ import imaplib
 import json
 import os
 import base64
+import hmac
+import re
+import secrets
 import shutil
 import signal
 import smtplib
@@ -66,6 +69,11 @@ except Exception as exc:  # pragma: no cover
     QWebEngineView = Any  # type: ignore[assignment]
     WEBENGINE_AVAILABLE = False
     WEBENGINE_ERROR = str(exc)
+
+try:
+    import tomllib
+except Exception:  # pragma: no cover
+    tomllib = None
 
 
 HERE = Path(__file__).resolve().parent
@@ -132,6 +140,11 @@ TRACKING_QUERY_KEYS = {
 }
 TRANSPARENT_PIXEL_DATA_URL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
+CONFIG_TOML_PATH = Path.home() / ".config" / "hanauta" / "config.toml"
+LOCAL_API_HOST = "127.0.0.1"
+LOCAL_API_PORT = 11426
+LOCAL_API_OTP_PERSIST_MS = 2147483647
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -155,6 +168,50 @@ def load_storage_config() -> dict[str, Any]:
     config["db_path"] = str(payload.get("db_path", config["db_path"])).strip() or config["db_path"]
     config["attachments_dir"] = str(payload.get("attachments_dir", config["attachments_dir"])).strip() or config["attachments_dir"]
     return config
+
+
+def load_email_client_api_key() -> str:
+    override = str(os.environ.get("HANAUTA_EMAIL_CLIENT_API_KEY", "")).strip()
+    if override:
+        return override
+    if tomllib is None or not CONFIG_TOML_PATH.exists():
+        return ""
+    try:
+        payload = tomllib.loads(CONFIG_TOML_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    current: Any = payload
+    for key in ("plugin", "email_client", "api_key"):
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(key)
+    return str(current or "").strip()
+
+
+def extract_otp_codes(text: str) -> list[str]:
+    if not text:
+        return []
+    normalized = re.sub(r"[ \t\r\n]+", " ", str(text))
+    candidates = [match.group(1) for match in re.finditer(r"(?<!\d)(\d{4,10})(?!\d)", normalized)]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for code in candidates:
+        if code in seen:
+            continue
+        seen.add(code)
+        unique.append(code)
+    return unique
+
+
+def best_otp_code_for_message(message: dict[str, Any]) -> str:
+    subject = str(message.get("subject", "") or "")
+    body = str(message.get("body_text", "") or "")
+    codes = extract_otp_codes(f"{subject} {body}")
+    return codes[0] if codes else ""
+
+
+def generate_email_client_api_key() -> str:
+    return secrets.token_urlsafe(32)
 
 
 def save_storage_config(config: dict[str, Any]) -> None:
@@ -237,17 +294,17 @@ def json_ready(value: Any) -> Any:
 def decode_text(value: Any) -> str:
     if value is None:
         return ""
-    if isinstance(value, bytes):
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        value = bytes(value)
         for encoding in ("utf-8", "latin-1"):
             try:
                 return value.decode(encoding)
             except Exception:
                 continue
         return value.decode("utf-8", errors="ignore")
-    if not isinstance(value, str):
-        value = str(value)
+    raw = value if isinstance(value, str) else str(value)
     parts: list[str] = []
-    for chunk, encoding in decode_header(value):
+    for chunk, encoding in decode_header(raw):
         if isinstance(chunk, bytes):
             for codec in (encoding, "utf-8", "latin-1"):
                 if not codec:
@@ -260,8 +317,12 @@ def decode_text(value: Any) -> str:
             else:
                 parts.append(chunk.decode("utf-8", errors="ignore"))
         else:
-            parts.append(chunk)
+            parts.append("" if chunk is None else str(chunk))
     return "".join(parts).strip()
+
+
+def decode_lower(value: Any) -> str:
+    return decode_text(value).lower()
 
 
 def html_to_text(value: str) -> str:
@@ -454,7 +515,7 @@ def message_parts(msg: Message) -> tuple[str, str]:
         for part in msg.walk():
             if part.get_content_maintype() == "multipart":
                 continue
-            disposition = (part.get("Content-Disposition") or "").lower()
+            disposition = decode_lower(part.get("Content-Disposition"))
             if "attachment" in disposition:
                 continue
             content_type = (part.get_content_type() or "").lower()
@@ -1054,6 +1115,24 @@ class MailStore:
             )
             self.conn.commit()
 
+    def latest_message(self) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.conn.execute(
+                """
+                SELECT account_id, folder, uid, subject, from_name, from_email, date_iso, snippet, body_text
+                FROM messages
+                WHERE is_spam = 0
+                ORDER BY datetime(date_iso) DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if not row:
+            return None
+        message = dict(row)
+        message["key"] = build_message_key(int(message["account_id"]), str(message["folder"]), str(message["uid"]))
+        message["body_text"] = self.cipher.decrypt_text(str(message.get("body_text", "")))
+        return message
+
     def delete_local_message(self, key: str) -> None:
         account_id, folder, uid = parse_message_key(key)
         with self.lock:
@@ -1280,6 +1359,104 @@ class FragmentServer:
         self.httpd.server_close()
 
 
+class LocalApiServer:
+    def __init__(self, store: MailStore) -> None:
+        self.store = store
+        self.httpd: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+        try:
+            self.httpd = ThreadingHTTPServer((LOCAL_API_HOST, LOCAL_API_PORT), self._handler())
+        except OSError:
+            self.httpd = None
+            return
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def _handler(self) -> type[BaseHTTPRequestHandler]:
+        store = self.store
+
+        class Handler(BaseHTTPRequestHandler):
+            def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _require_auth(self) -> bool:
+                expected = load_email_client_api_key()
+                if not expected:
+                    self._send_json({"error": "api_key_unset"}, status=503)
+                    return False
+                provided = ""
+                auth = str(self.headers.get("Authorization", "")).strip()
+                if auth.lower().startswith("bearer "):
+                    provided = auth.split(None, 1)[1].strip()
+                if not provided:
+                    provided = str(self.headers.get("X-Api-Key", "")).strip()
+                if not provided:
+                    parsed = urllib.parse.urlparse(self.path)
+                    query = urllib.parse.parse_qs(parsed.query)
+                    provided = str(query.get("api_key", [""])[0]).strip()
+                if not provided or not hmac.compare_digest(provided, expected):
+                    self._send_json({"error": "unauthorized"}, status=401)
+                    return False
+                return True
+
+            def do_GET(self) -> None:  # type: ignore[override]
+                if not self._require_auth():
+                    return
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/api/messages/latest":
+                    message = store.latest_message()
+                    if not message:
+                        self._send_json({"message": None})
+                        return
+                    self._send_json(
+                        {
+                            "message": {
+                                "key": str(message.get("key", "")),
+                                "title": str(message.get("subject", "") or ""),
+                                "content": str(message.get("body_text", "") or ""),
+                                "from_email": str(message.get("from_email", "")),
+                                "received_at": str(message.get("date_iso", "")),
+                            }
+                        }
+                    )
+                    return
+                if parsed.path == "/api/otp/latest":
+                    message = store.latest_message()
+                    if not message:
+                        self._send_json({"otp_code": "", "message": None})
+                        return
+                    otp_code = best_otp_code_for_message(message)
+                    self._send_json(
+                        {
+                            "otp_code": otp_code,
+                            "message": {
+                                "key": str(message.get("key", "")),
+                                "title": str(message.get("subject", "") or ""),
+                                "from_email": str(message.get("from_email", "")),
+                                "received_at": str(message.get("date_iso", "")),
+                            },
+                        }
+                    )
+                    return
+                self._send_json({"error": "not_found"}, status=404)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+                return
+
+        return Handler
+
+    def close(self) -> None:
+        if not self.httpd:
+            return
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
 class EmailClientWindow(QWidget):
     syncCompleted = pyqtSignal(str, str)
 
@@ -1302,6 +1479,7 @@ class EmailClientWindow(QWidget):
         self._message_render_cache: dict[tuple[str, bool, bool], dict[str, Any]] = {}
         self._open_compose_after_load = False
         self.fragment_server = FragmentServer(self)
+        self.api_server = LocalApiServer(self.store)
 
         self.setWindowTitle(APP_NAME)
         if APP_ICON_PATH.exists():
@@ -1313,7 +1491,14 @@ class EmailClientWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.view = QWebEngineView(self)
-        self.view.page().setBackgroundColor(QColor("#12131d"))
+        try:
+            self.view.page().setBackgroundColor(QColor(load_theme_palette().background))
+        except Exception:
+            self.view.page().setBackgroundColor(QColor("#12131d"))
+        try:
+            self.view.page().profile().clearHttpCache()
+        except Exception:
+            pass
         settings = self.view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
@@ -1358,6 +1543,7 @@ class EmailClientWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self.fragment_server.close()
+        self.api_server.close()
         super().closeEvent(event)
 
     def _load_page(self) -> None:
@@ -1606,6 +1792,10 @@ class EmailClientWindow(QWidget):
             selected_message = self._decorate_message_for_display(selected_message)
             contacts = self.store.list_contacts()
             theme = load_theme_palette()
+            try:
+                self.view.page().setBackgroundColor(QColor(theme.background))
+            except Exception:
+                pass
             status = self.account_status.get(selected_account, {})
             if selected_account == 0:
                 online_accounts = [item for key, item in self.account_status.items() if bool(item.get("online"))]
@@ -1691,7 +1881,15 @@ class EmailClientWindow(QWidget):
         if current == self._theme_mtime:
             return
         self._theme_mtime = current
+        self._apply_webview_background()
         self.push_state()
+
+    def _apply_webview_background(self) -> None:
+        try:
+            theme = load_theme_palette()
+            self.view.page().setBackgroundColor(QColor(theme.background))
+        except Exception:
+            return
 
     def open_settings_app(self) -> None:
         command = entry_command(APP_DIR / "pyqt" / "settings-page" / "settings.py")
@@ -2278,7 +2476,7 @@ class EmailClientWindow(QWidget):
             body_html, body_text = message_parts(msg)
             flags_seen = "\\Seen" in header_blob
             flags_flagged = "\\Flagged" in header_blob
-            has_attachments = any("attachment" in (part.get("Content-Disposition") or "").lower() for part in msg.walk())
+            has_attachments = any("attachment" in decode_lower(part.get("Content-Disposition")) for part in msg.walk())
             payload = {
                 "message_id": decode_text(msg.get("Message-ID", "")),
                 "in_reply_to": decode_text(msg.get("In-Reply-To", "")),
@@ -2358,14 +2556,57 @@ class EmailClientWindow(QWidget):
             msg = message_from_bytes(item[1])
             from_name, from_email = parseaddr(decode_text(msg.get("From", "")))
             subject = decode_text(msg.get("Subject", "")) or "(No subject)"
-            notifications.append((f"{account['label']}: {sender_display(from_name, from_email)}", subject))
-        for title, body in notifications:
-            self._desktop_notify(title, body)
+            _, body_text = message_parts(msg)
+            otp_code = (extract_otp_codes(f"{subject} {body_text}") or [""])[0]
+            notifications.append((f"{account['label']}: {sender_display(from_name, from_email)}", subject, otp_code))
+        for title, body, otp_code in notifications:
+            self._desktop_notify(title, body, otp_code=otp_code)
         if notifications:
             self._play_notification_sound()
 
-    def _desktop_notify(self, title: str, body: str) -> None:
+    def _desktop_notify(self, title: str, body: str, *, otp_code: str = "") -> None:
+        otp_code = str(otp_code or "").strip()
+        if otp_code:
+            self._desktop_notify_with_copy_action(title, body, otp_code)
+            return
         subprocess.run(["notify-send", "-a", APP_NAME, title, body], capture_output=True, text=True, check=False)
+
+    def _desktop_notify_with_copy_action(self, title: str, body: str, otp_code: str) -> None:
+        try:
+            import dbus  # type: ignore[import-not-found]
+        except Exception:
+            subprocess.run(["notify-send", "-a", APP_NAME, title, f"{body}\nCode: {otp_code}"], capture_output=True, text=True, check=False)
+            return
+        bus = dbus.SessionBus()
+        obj = bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
+        iface = dbus.Interface(obj, "org.freedesktop.Notifications")
+        actions = dbus.Array(["copy_code", "Copy code"], signature="s")
+        metadata = json.dumps(
+            [
+                {
+                    "key": "copy_code",
+                    "action": "copy",
+                    "label": "Copy code",
+                    "value": str(otp_code),
+                    "clear": False,
+                }
+            ]
+        )
+        hints = dbus.Dictionary(
+            {"x-hanauta-ntfy-actions": dbus.String(metadata)},
+            signature="sv",
+        )
+        icon = str(APP_ICON_PATH) if APP_ICON_PATH.exists() else ""
+        iface.Notify(
+            APP_NAME,
+            dbus.UInt32(0),
+            icon,
+            str(title),
+            str(f"{body}\nCode: {otp_code}"),
+            actions,
+            hints,
+            dbus.Int32(int(LOCAL_API_OTP_PERSIST_MS)),
+        )
 
     def _play_notification_sound(self) -> None:
         if self.store.get_setting("sound_enabled", "1") != "1":
