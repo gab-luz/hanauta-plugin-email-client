@@ -7,3 +7,11 @@ Hanauta plugin repository for email client.
 
 ## Usage
 Install through Hanauta Marketplace or clone into your Hanauta plugins directory.
+
+## Development
+This plugin uses `uv` for dependency locking:
+
+```bash
+uv sync
+python3 email_client.py
+```

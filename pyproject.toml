@@ -1,0 +1,17 @@
+[project]
+name = "hanauta-plugin-email-client"
+version = "0.1.0"
+description = "Hanauta desktop email client plugin"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=42.0.0",
+    "PyQt6>=6.7.0",
+    "PyQt6-WebEngine>=6.7.0",
+]
+
+[dependency-groups]
+dev = []
+
+[tool.uv]
+package = false

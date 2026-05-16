@@ -144,6 +144,27 @@ CONFIG_TOML_PATH = Path.home() / ".config" / "hanauta" / "config.toml"
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 11426
 LOCAL_API_OTP_PERSIST_MS = 2147483647
+SUPPORTED_LOCALES = {"en-US", "pt-BR", "es-419", "ru"}
+DEFAULT_LOCALE = "en-US"
+
+
+def normalize_locale(value: Any) -> str:
+    raw = str(value or "").strip()
+    aliases = {
+        "en": "en-US",
+        "en_US": "en-US",
+        "en-us": "en-US",
+        "pt": "pt-BR",
+        "pt_BR": "pt-BR",
+        "pt-br": "pt-BR",
+        "es": "es-419",
+        "es_419": "es-419",
+        "es-419": "es-419",
+        "ru_RU": "ru",
+        "ru-ru": "ru",
+    }
+    normalized = aliases.get(raw, aliases.get(raw.lower(), raw))
+    return normalized if normalized in SUPPORTED_LOCALES else DEFAULT_LOCALE
 
 
 def now_iso() -> str:
@@ -1240,6 +1261,7 @@ class MailBridge(QObject):
     deleteRequested = pyqtSignal(str)
     seenRequested = pyqtSignal(str, bool)
     settingsRequested = pyqtSignal()
+    settingsSaveRequested = pyqtSignal(str)
     exportSelectedRequested = pyqtSignal(str)
     exportVisibleRequested = pyqtSignal()
     externalLinkRequested = pyqtSignal(str)
@@ -1294,6 +1316,10 @@ class MailBridge(QObject):
     @pyqtSlot()
     def openSettings(self) -> None:
         self.settingsRequested.emit()
+
+    @pyqtSlot(str)
+    def saveSettings(self, payload_json: str) -> None:
+        self.settingsSaveRequested.emit(payload_json)
 
     @pyqtSlot(str)
     def exportSelected(self, message_key: str) -> None:
@@ -1523,6 +1549,7 @@ class EmailClientWindow(QWidget):
         self.bridge.deleteRequested.connect(self.delete_message)
         self.bridge.seenRequested.connect(self.set_seen)
         self.bridge.settingsRequested.connect(self.open_settings_app)
+        self.bridge.settingsSaveRequested.connect(self.save_settings)
         self.bridge.exportSelectedRequested.connect(self.export_selected_message)
         self.bridge.exportVisibleRequested.connect(self.export_visible_messages_zip)
         self.bridge.externalLinkRequested.connect(self.open_external_link)
@@ -1861,6 +1888,7 @@ class EmailClientWindow(QWidget):
                 "contacts": contacts,
                 "sound_enabled": self.store.get_setting("sound_enabled", "1") == "1",
                 "sound_path": self.store.get_setting("sound_path", ""),
+                "locale": normalize_locale(self.store.get_setting("locale", DEFAULT_LOCALE)),
                 "reply_draft": self._reply_draft,
                 "mail_online": bool(status.get("online", False)),
                 "mail_status_text": str(status.get("detail", "Waiting for the first sync.")),
@@ -1898,6 +1926,20 @@ class EmailClientWindow(QWidget):
             return
         command = [*command, "--page", "services", "--service-section", "mail"]
         subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    def save_settings(self, payload_json: str) -> None:
+        try:
+            payload = json.loads(payload_json)
+        except Exception as exc:
+            self.push_toast("Settings not saved", str(exc))
+            return
+        sound_enabled = "1" if bool(payload.get("sound_enabled", True)) else "0"
+        sound_path = str(payload.get("sound_path", "")).strip()
+        locale = normalize_locale(payload.get("locale", DEFAULT_LOCALE))
+        self.store.set_setting("sound_enabled", sound_enabled)
+        self.store.set_setting("sound_path", sound_path)
+        self.store.set_setting("locale", locale)
+        self.push_state()
 
     def export_selected_message(self, message_key: str) -> None:
         if not message_key:
